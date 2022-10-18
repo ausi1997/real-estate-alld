@@ -1,0 +1,671 @@
+<?php
+
+define('SENDPULSE_ADDRESSBOOK_API_PATH', 'emailservice/addressbooks/emails/id/');
+
+require_once __DIR__ . '/includes/sendpulse_mailing_list.admin.inc';
+
+/**
+ * Implements hook_menu().
+ */
+function sendpulse_mailing_list_menu() {
+  $items['admin/structure/mailing_lists/sync-users'] = [
+    'title' => 'Synchronize users',
+    'page callback' => 'sendpulse_mailing_list_synchronize_users',
+    'access arguments' => ['administer sendpulse'],
+    'type' => MENU_LOCAL_ACTION,
+  ];
+
+  return $items;
+}
+
+/**
+ * Implements hook_permission().
+ */
+function sendpulse_mailing_list_permission() {
+  return [
+    'administer sendpulse mailing lists' => [
+      'title' => t('Administer SendPulse Mailing lists module'),
+      'description' => t('Change settings of SendPulse module behavior.'),
+    ],
+    'manage sendpulse mailing lists' => [
+      'title' => t('Managing SendPulse Mailing lists'),
+      'description' => t('Grants the ability to manage (add/edit/delete) mailing lists. Pull Mailing lists from SendPulse to Drupal and users from Drupal to SendPulse.'),
+    ],
+  ];
+}
+
+/**
+ * Callback for sync users between Drupal and SendPulse.
+ */
+function sendpulse_mailing_list_synchronize_users() {
+  $operations = [];
+  $users = entity_load('user');
+
+  // Get all mailing lists for processing.
+  $maling_lists = sendpulse_mailing_list_load_multiple();
+
+  foreach ($users as $user) {
+    $operations[] = [
+      'sendpulse_mailing_list_synchronize_users_process',
+      [$maling_lists, $user],
+    ];
+  }
+
+  // Array with data for batch.
+  $batch = [
+    'title' => t('Updating users in Sendpulse'),
+    'operations' => $operations,
+    'finished' => 'sendpulse_mailing_list_synchronize_users_finished',
+    'file' => drupal_get_path('module', 'sendpulse_mailing_list') . '/includes/sendpulse_mailing_list.batch.inc',
+  ];
+
+  batch_set($batch);
+  batch_process();
+}
+
+/**
+ * Implements hook_cron().
+ */
+function sendpulse_mailing_list_cron() {
+  $client = sendpulse_get_client();
+
+  // Load all mailing lists from sendpulse and save/update them in Drupal.
+  $sendpulse_books = $client->listAddressBooks();
+  foreach ($sendpulse_books as $sendpulse_book) {
+    $mailing_list = sendpulse_mailing_list_load_by_sendpulse_id($sendpulse_book->id);
+
+    // Create new mailing list in Drupal if failed to load existing entity.
+    if (!$mailing_list) {
+      $mailing_list = new SendpulseMailingList([], 'sendpulse_mailing_list');
+      $mailing_list->sendpulse_abid = $sendpulse_book->id;
+    }
+
+    // Filling properties.
+    $mailing_list->label = $sendpulse_book->name;
+    $mailing_list->status = $sendpulse_book->status;
+    $mailing_list->all_email_qty = $sendpulse_book->all_email_qty;
+    $mailing_list->active_email_qty = $sendpulse_book->active_email_qty;
+    $mailing_list->inactive_email_qty = $sendpulse_book->inactive_email_qty;
+    $mailing_list->creationdate = strtotime($sendpulse_book->creationdate);
+
+    $mailing_list->save();
+  }
+
+  // Remove mailing lists which not exists in SendPulse but exists in Drupal.
+  $mailing_lists = sendpulse_mailing_list_load_multiple();
+  foreach ($mailing_lists as $mailing_list) {
+    $exist = FALSE;
+    foreach ($sendpulse_books as $sendpulse_book) {
+      if ($mailing_list->sendpulse_abid == $sendpulse_book->id) {
+        $exist = TRUE;
+        break;
+      }
+    }
+
+    if (!$exist) {
+      $mailing_list->delete();
+    }
+  }
+}
+
+/**
+ * Implements hook_user_insert().
+ */
+function sendpulse_mailing_list_user_insert(&$edit, $account, $category) {
+  // If export of users is enabled.
+  if (variable_get('sendpulse_mailing_list_export_users', FALSE)) {
+    $subscribe = FALSE;
+
+    // Export user only if checkbox on registration for was hidden
+    $subscribe_checkbox = variable_get('sendpulse_mailing_list_subscribe_checkbox', 'hidden');
+    if ($subscribe_checkbox == 'hidden') {
+      $subscribe = TRUE;
+    }
+    // Or if user checked subscription.
+    elseif (!empty($edit['sendpulse_mailing_list_subscribe'])){
+      $subscribe = TRUE;
+    }
+
+    if ($subscribe) {
+      $mailing_lists = sendpulse_mailing_list_load_multiple();
+      $target_lists = sendpulse_mailing_list_get_mailing_lists_for_user($mailing_lists, $account);
+
+      if (!empty($target_lists)) {
+        foreach ($target_lists as $target_list) {
+          $variables = sendpulse_mailing_list_get_user_variables_values($target_list, $account);
+
+          $emails = [
+            [
+              'email' => $account->mail,
+              'variables' => $variables,
+            ],
+          ];
+
+          $client = sendpulse_get_client();
+          $client->addEmails($target_list->sendpulse_abid, $emails);
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_user_update().
+ */
+function sendpulse_mailing_list_user_update(&$edit, $account, $category) {
+  // If export of users is enabled.
+  if (variable_get('sendpulse_mailing_list_export_users', FALSE)) {
+    $mailing_lists = sendpulse_mailing_list_load_multiple();
+    $target_lists = sendpulse_mailing_list_get_mailing_lists_for_user($mailing_lists, $account);
+
+    if (!empty($target_lists)) {
+      foreach ($target_lists as $target_list) {
+        $variables = sendpulse_mailing_list_get_user_variables_values($target_list, $account);
+
+        $emails = [
+          [
+            'email' => $account->mail,
+            'variables' => $variables,
+          ],
+        ];
+
+        $client = sendpulse_get_client();
+        $client->addEmails($target_list->sendpulse_abid, $emails);
+      }
+    }
+  }
+}
+
+/**
+ * @param \SendpulseMailingList $mailing_list
+ * @param $account
+ * @return array
+ */
+function sendpulse_mailing_list_get_user_variables_values(SendpulseMailingList $mailing_list, $account) {
+  $variables = [];
+
+  if (!empty($mailing_list->mapping)) {
+    $user = entity_metadata_wrapper('user', $account);
+    foreach ($mailing_list->mapping as $variable => $drupal_field) {
+      if ($value = $user->{$drupal_field}->value()) {
+        switch ($user->{$drupal_field}->type()) {
+          case 'date':
+            $variables[$variable] = format_date($value, 'custom', 'Y-m-d');
+            break;
+
+          default:
+            $variables[$variable] = $value;
+            break;
+        }
+      }
+      else {
+        $variables[$variable] = '';
+      }
+    }
+  }
+
+  return $variables;
+}
+
+/**
+ * Get all mailing lists in which the user can be imported.
+ * It is determined based on the roles that you selected on the edit page
+ * of mailing lists in Drupal.
+ *
+ * @param array $mailing_lists
+ *   Array with mailing lists objects.
+ * @param stdClass $account
+ *   User object.
+ *
+ * @return array
+ *   Array of mailing lists which contains roles of user.
+ */
+function sendpulse_mailing_list_get_mailing_lists_for_user($mailing_lists, $account) {
+  $target_lists = [];
+
+  foreach ($mailing_lists as $mailing_list) {
+    if (!empty($mailing_list->roles)) {
+      $available_roles = $mailing_list->roles;
+      $available_roles = array_filter($available_roles, '_sendpulse_mailing_list_filter_roles_array');
+      if (array_intersect_key($available_roles, $account->roles)) {
+        $target_lists[] = $mailing_list;
+      }
+    }
+  }
+
+  return $target_lists;
+}
+
+/**
+ *
+ *
+ * @param $value
+ * @return mixed
+ */
+function _sendpulse_mailing_list_filter_roles_array($value) {
+  if (!empty($value)) {
+    return $value;
+  }
+}
+
+/**
+ * Implements hook_entity_info().
+ */
+function sendpulse_mailing_list_entity_info() {
+  $return = [
+    'sendpulse_mailing_list' => [
+      'label' => t('Mailing List'),
+      'controller class' => 'EntityAPIController',
+      'entity class' => 'SendpulseMailingList',
+      'base table' => 'sendpulse_mailing_list',
+      'label callback' => 'entity_class_label',
+      'uri callback' => 'entity_class_uri',
+      'load hook' => 'sendpulse_mailing_list_load',
+      'entity keys' => [
+        'id' => 'abid',
+        'label' => 'label',
+      ],
+      'bundles' => [
+        'sendpulse_mailing_list' => [
+          'label' => t('Mailing lists'),
+          'admin' => [
+            'path' => 'admin/structure/mailing_lists/manage',
+            'access arguments' => ['administer sendpulse mailing lists'],
+          ],
+        ],
+      ],
+      'view modes' => [],
+      'module' => 'sendpulse',
+      'admin ui' => [
+        'path' => 'admin/structure/mailing_lists',
+        'file' => 'includes/sendpulse.admin.inc',
+        'controller class' => 'SendpulseMailingListEntityUIController',
+        'menu wildcard' => '%sendpulse_mailing_list',
+      ],
+      'access callback' => 'sendpulse_mailing_list_access',
+    ],
+  ];
+
+  // Support entity cache module.
+  if (module_exists('entitycache')) {
+    $return['domain']['field cache'] = FALSE;
+    $return['domain']['entity cache'] = TRUE;
+  }
+
+  return $return;
+}
+
+/**
+ * Main class for domain entities.
+ */
+class SendpulseMailingList extends Entity {
+
+  /**
+   * The mailing list id.
+   *
+   * @var integer
+   */
+  public $abid;
+
+  /**
+   * The mailing list label.
+   *
+   * @var string
+   */
+  public $label;
+
+  /**
+   * The mailing list label.
+   *
+   * @var string
+   */
+  public $sendpulse_abid;
+
+  /**
+   * The mailing list label.
+   *
+   * @var string
+   */
+  public $status;
+
+  /**
+   * The mailing list label.
+   *
+   * @var string
+   */
+  public $all_email_qty;
+
+  /**
+   * The mailing list label.
+   *
+   * @var string
+   */
+  public $active_email_qty;
+
+  /**
+   * The mailing list label.
+   *
+   * @var string
+   */
+  public $inactive_email_qty;
+
+  /**
+   * The mailing list label.
+   *
+   * @var array
+   */
+  public $roles;
+
+  /**
+   * The mailing list label.
+   *
+   * @var string
+   */
+  public $creationdate;
+
+  /**
+   * The mailing list label.
+   *
+   * @var array
+   */
+  public $mapping = [];
+}
+
+/**
+ * Customized admin UI for Domains management.
+ */
+class SendpulseMailingListEntityUIController extends EntityDefaultUIController {
+
+  /**
+   * Override of hook_menu().
+   *
+   * Overrides hook_menu() defaults. Main reason for doing this is that
+   * parent class hook_menu() is optimized for entity type administration.
+   */
+  public function hook_menu() {
+    $items = parent::hook_menu();
+
+    $items[$this->path . '/add'] = [
+      'title callback' => 'entity_ui_get_action_title',
+      'title arguments' => ['add', $this->entityType],
+      'page callback' => 'entity_ui_get_form',
+      'page arguments' => [$this->entityType, NULL, 'add'],
+      'access callback' => 'entity_access',
+      'access arguments' => ['create', $this->entityType],
+      'type' => MENU_LOCAL_ACTION,
+    ];
+
+    return $items;
+  }
+
+  /**
+   * Generates the render array for a overview table for arbitrary entities
+   * matching the given conditions.
+   *
+   * @param $conditions
+   *   An array of conditions as needed by entity_load().
+
+   * @return Array
+   *   A renderable array.
+   */
+  public function overviewTable($conditions = []) {
+
+    $query = new EntityFieldQuery();
+    $query->entityCondition('entity_type', $this->entityType);
+
+    // Add all conditions to query.
+    foreach ($conditions as $key => $value) {
+      $query->propertyCondition($key, $value);
+    }
+
+    if ($this->overviewPagerLimit) {
+      $query->pager($this->overviewPagerLimit);
+    }
+
+    $results = $query->execute();
+
+    $ids = isset($results[$this->entityType]) ? array_keys($results[$this->entityType]) : [];
+    $entities = $ids ? entity_load($this->entityType, $ids) : [];
+
+    $sort_property = variable_get('sendpulse_mailing_list_sort_property', 'creationdate');
+    usort($entities, function($a, $b) use ($sort_property) {
+      switch ($sort_property) {
+        case 'creationdate':
+        case 'all_email_qty':
+        case 'active_email_qty':
+        case 'inactive_email_qty':
+          if ($a->{$sort_property} == $b->{$sort_property}) {
+            $result = 0;
+          }
+          else {
+            $result = ($a->{$sort_property}> $b->{$sort_property}) ? -1 : 1;
+          }
+          break;
+
+        default:
+          if (empty($a->{$sort_property}) || empty($b->{$sort_property})) {
+            $sort_property = 'label';
+          }
+          $result = strcasecmp($a->{$sort_property}, $b->{$sort_property});
+          break;
+      }
+      return $result;
+    });
+
+    $rows = [];
+    foreach ($entities as $entity) {
+      $rows[] = $this->overviewTableRow($conditions, entity_id($this->entityType, $entity), $entity);
+    }
+
+    $render = [
+      '#theme' => 'table',
+      '#header' => $this->overviewTableHeaders($conditions, $rows),
+      '#rows' => $rows,
+      '#empty' => t('None.'),
+    ];
+    return $render;
+  }
+
+  /**
+   * Generates the table headers for the overview table.
+   */
+  protected function overviewTableHeaders($conditions, $rows, $additional_header = []) {
+    $additional_header = [
+      t('Total number of addresses'),
+      t('Active addresses'),
+      t('Inactive addresses'),
+      t('Creation date'),
+    ];
+
+    $header = parent::overviewTableHeaders($conditions, $rows, $additional_header);
+
+    return $header;
+  }
+
+  /**
+   * Generates the row for the passed entity and may be overridden in order to
+   * customize the rows.
+   *
+   * @param $additional_cols
+   *   Additional columns to be added after the entity label column.
+   */
+  protected function overviewTableRow($conditions, $id, $entity, $additional_cols = []) {
+    $mailing_list = sendpulse_mailing_list_load($id);
+
+    $entity_uri = [
+      'path' => SENDPULSE_LOGIN_URL . '/' . SENDPULSE_ADDRESSBOOK_API_PATH . $mailing_list->sendpulse_abid,
+      'options' => [
+        'external' => TRUE,
+        'attributes' => [
+          'target' => '_blank',
+        ],
+      ]
+    ];
+
+    $row[] = [
+      'data' => [
+        '#theme' => 'entity_ui_overview_item',
+        '#label' => entity_label($this->entityType, $entity),
+        '#name' => !empty($this->entityInfo['exportable']) ? entity_id($this->entityType, $entity) : FALSE,
+        '#url' => $entity_uri ? $entity_uri : FALSE,
+        '#entity_type' => $this->entityType
+      ],
+    ];
+
+    $sendpulse_cols = [
+      $mailing_list->all_email_qty,
+      $mailing_list->active_email_qty,
+      $mailing_list->inactive_email_qty,
+      format_date($mailing_list->creationdate, 'short')
+    ];
+
+    $additional_cols = array_merge($additional_cols, $sendpulse_cols);
+
+    // Add in any passed additional cols.
+    foreach ($additional_cols as $col) {
+      $row[] = $col;
+    }
+
+    // Add a row for the exportable status.
+    if (!empty($this->entityInfo['exportable'])) {
+      $row[] = [
+        'data' => [
+          '#theme' => 'entity_status',
+          '#status' => $entity->{$this->statusKey},
+        ]
+      ];
+    }
+    // In case this is a bundle, we add links to the field ui tabs.
+    $field_ui = !empty($this->entityInfo['bundle of']) && entity_type_is_fieldable($this->entityInfo['bundle of']) && module_exists('field_ui');
+    // For exportable entities we add an export link.
+    $exportable = !empty($this->entityInfo['exportable']);
+    // If i18n integration is enabled, add a link to the translate tab.
+    $i18n = !empty($this->entityInfo['i18n controller class']);
+
+    // Add operations depending on the status.
+    if (entity_has_status($this->entityType, $entity, ENTITY_FIXED)) {
+      $row[] = [
+        'data' => l(t('clone'), $this->path . '/manage/' . $id . '/clone'),
+        'colspan' => $this->operationCount()
+      ];
+    }
+    else {
+      $row[] = l(t('edit'), $this->path . '/manage/' . $id);
+
+      if ($field_ui) {
+        $row[] = l(t('manage fields'), $this->path . '/manage/' . $id . '/fields');
+        $row[] = l(t('manage display'), $this->path . '/manage/' . $id . '/display');
+      }
+      if ($i18n) {
+        $row[] = l(t('translate'), $this->path . '/manage/' . $id . '/translate');
+      }
+      if ($exportable) {
+        $row[] = l(t('clone'), $this->path . '/manage/' . $id . '/clone');
+      }
+
+      if (empty($this->entityInfo['exportable']) || !entity_has_status($this->entityType, $entity, ENTITY_IN_CODE)) {
+        $row[] = l(t('delete'), $this->path . '/manage/' . $id . '/delete', ['query' => drupal_get_destination()]);
+      }
+      elseif (entity_has_status($this->entityType, $entity, ENTITY_OVERRIDDEN)) {
+        $row[] = l(t('revert'), $this->path . '/manage/' . $id . '/revert', ['query' => drupal_get_destination()]);
+      }
+      else {
+        $row[] = '';
+      }
+    }
+    if ($exportable) {
+      $row[] = l(t('export'), $this->path . '/manage/' . $id . '/export');
+    }
+    return $row;
+  }
+
+  /**
+   * Builds the entity overview form.
+   */
+  public function overviewForm($form, &$form_state) {
+    if (user_access('administer site configuration')) {
+      $form['#prefix'] = t('Mailing lists are pulled from SendPulse by <a href="@run-cron">running cron</a>.', [
+        '@run-cron' => url('admin/reports/status/run-cron', [
+          'query' => ['destination' => 'admin/structure/mailing_lists'],
+        ])
+      ]);
+    }
+    // By default just show a simple overview for all entities.
+    $form['table'] = $this->overviewTable();
+    $form['pager'] = ['#theme' => 'pager'];
+    return $form;
+  }
+
+}
+
+/**
+ * Access callback for the entity API.
+ *
+ * @param string $op
+ *   The operation being performed. One of 'view', 'update', 'create', 'delete'
+ *   or just 'edit' (being the same as 'create' or 'update').
+ * @param SendpulseMailingList $mailing_list
+ *   (optional) A mailing list to check access for. If nothing is given, access for
+ *   all mailing lists is determined.
+ * @param \stdClass|null $account
+ *   (optional) The user to check for. Leave it to NULL to check for the global
+ *   user.
+ *
+ * @return bool
+ *   Whether access is allowed or not.
+ */
+function sendpulse_mailing_list_access($op, SendpulseMailingList $mailing_list = NULL, $account = NULL) {
+  global $user;
+  if (!isset($account)) {
+    $account = $user;
+  }
+
+  if (user_access('manage sendpulse mailing lists', $account)) {
+    return TRUE;
+  }
+}
+
+/**
+ * Load single domain entity.
+ *
+ * @param int $abid
+ *   Identifier for loading mailing list.
+ *
+ * @return SendpulseMailingList|null
+ *   Domain if success, NULL otherwise.
+ */
+function sendpulse_mailing_list_load($abid) {
+  $mailing_lists = sendpulse_mailing_list_load_multiple([$abid]);
+  return $mailing_lists ? reset($mailing_lists) : NULL;
+}
+
+/**
+ * Load single SendPulse Mailing List entity.
+ *
+ * @param int $sendpulse_abid
+ *   SendPulse identifier for loading mailing list.
+ *
+ * @return SendpulseMailingList|null
+ *   Domain if success, NULL otherwise.
+ */
+function sendpulse_mailing_list_load_by_sendpulse_id($sendpulse_abid) {
+  $mailing_lists = sendpulse_mailing_list_load_multiple(FALSE, ['sendpulse_abid' => $sendpulse_abid]);
+  return $mailing_lists ? reset($mailing_lists) : NULL;
+}
+
+/**
+ * Load multiple domain entities matched to conditions.
+ *
+ * @param array $abids
+ *   An array of Mailing Lists IDs, or FALSE to load all Mailing Lists.
+ * @param array $conditions
+ *   Conditions to filter loading entities.
+ * @param bool $reset
+ *   Reset local cache.
+ *
+ * @return SendpulseMailingList[]
+ *   Loaded entities.
+ */
+function sendpulse_mailing_list_load_multiple($abids = FALSE, $conditions = [], $reset = FALSE) {
+  return entity_load('sendpulse_mailing_list', $abids, $conditions, $reset);
+}

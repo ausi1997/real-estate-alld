@@ -1,0 +1,83 @@
+<?php
+
+/**
+ * @file
+ * Install, update and uninstall functions for the domain_as_entity module.
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function sendpulse_mailing_list_schema() {
+  $schema['sendpulse_mailing_list'] = [
+    'description' => 'The base table for SendPulse mailing lists.',
+    'fields' => [
+      'abid' => [
+        'description' => 'The primary identifier for a mailing list.',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ],
+      'sendpulse_abid' => [
+        'description' => 'The primary identifier for a mailing list in SendPulse.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ],
+      'label' => [
+        'description' => 'Human-readable mailing list name.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ],
+      'status' => [
+        'description' => 'Status code',
+        'type' => 'int',
+        'size' => 'tiny',
+        'not null' => TRUE,
+        'default' => 1,
+      ],
+      'all_email_qty' => [
+        'description' => 'Total number of emails',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ],
+      'active_email_qty' => [
+        'description' => 'Number of active emails',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ],
+      'inactive_email_qty' => [
+        'description' => 'Number of inactive emails',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ],
+      'roles' => [
+        'type' => 'blob',
+        'size' => 'big',
+        'not null' => TRUE,
+        'serialize' => TRUE,
+        'description' => 'Serialized data containing roles that available for this mailing list.',
+      ],
+      'creationdate' => array(
+        'description' => "Date of creation",
+        'type' => 'int',
+        'not null' => TRUE,
+      ),
+      'mapping' => [
+        'type' => 'blob',
+        'size' => 'big',
+        'not null' => FALSE,
+        'serialize' => TRUE,
+        'description' => 'Serialized data containing mapping between sendpulse variables and drupal fields.',
+      ],
+    ],
+    'primary key' => ['abid'],
+  ];
+
+  return $schema;
+}

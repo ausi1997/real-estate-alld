@@ -1,0 +1,72 @@
+<?php
+
+/**
+ * @file
+ * Hook_init.
+ */
+
+/**
+ * {@inheritdoc}
+ */
+function Pushflew_init() {
+  if (module_exists('Pushflew')) {
+    $authToken = variable_get('pushflew_section/pushflew_group/auth_token') ? variable_get('pushflew_section/pushflew_group/auth_token') : '';
+
+    $websiteId = variable_get('pushflew_section/pushflew_group/website_id') ? variable_get('pushflew_section/pushflew_group/website_id') : '';
+
+    $protocol = $_SERVER['REQUEST_SCHEME'];
+
+    if (!empty($websiteId) && !empty($authToken)) {
+
+      if (!empty($protocol) && $protocol == 'https') {
+        $datas = "var version = 1.1;
+importScripts('https://cdn.pushflew.com/service_worker.js');";
+        $filename = 'pushflew_worker.js';
+        $filepath = $filename;
+        $fp = fopen($filepath, "w");
+        fwrite($fp, $datas);
+        fclose($fp);
+        chmod($filepath, 0777);
+      }
+
+      drupal_add_js(array('Pushflew' => array('protocol' => $protocol, 'websiteId' => $websiteId)), array('type' => 'setting'));
+      drupal_add_js(drupal_get_path('module', 'Pushflew') . '/js/frontend.js', array(
+        'weight' => 0,
+        'scope' => 'header',
+        'every_page' => TRUE,
+      ));
+    }
+  }
+}
+
+/**
+ * Hook_Menu.
+ */
+function Pushflew_menu() {
+  $items = array();
+
+  $items['admin/pushflew'] = array(
+    'title' => 'PushFlew',
+    'description' => 'pushflew menu item which should appear on the toolbar',
+    'position' => 'right',
+    'weight' => 100,
+    'page callback' => '_pushflew_data',
+    'access arguments' => array('access administration pages'),
+    'file' => 'system.admin.inc',
+    'file path' => drupal_get_path('module', 'system'),
+  );
+
+  return $items;
+}
+
+/**
+ * {@inheritdoc}
+ */
+function _pushflew_data() {
+  module_load_include('inc', 'Pushflew', 'Pushflew');
+  $iframeUrl = get_iframe_url();
+  $url = str_replace(" ", "%20", $iframeUrl);
+  $data = '<iframe id="pushflew_iframe" src=' . $url . ' width="100%" frameborder="0" scrolling="yes" style="min-height: 700px;"></iframe>';
+
+  return $data;
+}

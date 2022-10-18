@@ -1,0 +1,26 @@
+#sendpulse-fields-mapping-wrap .sendpulse-mappings-add {
+  border: 1px solid #cccccc;
+  float: left;
+  margin-bottom: 1.2em;
+}
+#sendpulse-fields-mapping-wrap .sendpulse-add-button,
+#sendpulse-fields-mapping-wrap .form-item-sendpulse-fields-mapping-target,
+#sendpulse-fields-mapping-wrap .form-item-sendpulse-fields-mapping-source {
+  padding: 0 20px;
+  float: left;
+}
+
+#sendpulse-fields-mapping-wrap .sendpulse-add-button input {
+  margin-top: 19px;
+  margin-bottom: 0;
+}
+.sendpulse-label-mapping-tbl .form-item {
+  float: left;
+  clear: both;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+ #sendpulse-mapping-tbl-wrap {
+  float: left;
+  width: 100%;
+}

@@ -1,0 +1,95 @@
+<?php
+
+define('SENDPULSE_LOGIN_URL', 'https://login.sendpulse.com');
+
+require_once __DIR__ . '/includes/sendpulse.admin.inc';
+
+use Sendpulse\RestApi\ApiClient as SendpulseApi;
+use Sendpulse\RestApi\Storage as SendPulseStorage;
+
+/**
+ * Implements hook_menu().
+ */
+function sendpulse_menu() {
+  $items['admin/config/services/sendpulse'] = [
+    'title' => 'SendPulse settings',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => ['sendpulse_admin_main_settings'],
+    'access arguments' => ['administer sendpulse'],
+    'file' => 'includes/sendpulse.admin.inc',
+  ];
+
+  return $items;
+}
+
+/**
+ * Implements hook_permission().
+ */
+function sendpulse_permission() {
+  return [
+    'administer sendpulse' => [
+      'title' => t('Administer SendPulse module'),
+      'description' => t('Access to main config page (admin/config/services/sendpulse) of module.'),
+    ],
+  ];
+}
+
+/**
+ * Implements hook_libraries_info().
+ */
+function sendpulse_libraries_info() {
+  return [
+    'sendpulse-rest-api-php' => [
+      'name' => 'Sendpulse API Wrapper',
+      'vendor url' => 'https://github.com/sendpulse/sendpulse-rest-api-php',
+      'download url' => 'https://github.com/sendpulse/sendpulse-rest-api-php/archive/master.zip',
+      'version' => '1.0',
+      'files' => [
+        'php' => [
+          'src/Storage/TokenStorageInterface.php',
+          'src/Storage/SessionStorage.php',
+          'src/ApiInterface.php',
+          'src/ApiClient.php',
+        ],
+      ],
+    ],
+  ];
+}
+
+/**
+ * Load sendpulse php wrapper library.
+ */
+function sendpulse_load_lib() {
+  $loaded = &drupal_static(__FUNCTION__);
+  if ($loaded) {
+    return;
+  }
+  libraries_load('sendpulse-rest-api-php');
+  $loaded = TRUE;
+}
+
+/**
+ * Get SendPulse client for working with API.
+ *
+ * @return SendpulseApi
+ *   Sendpulse API client.
+ */
+function sendpulse_get_client($storage_type = 'session', $id = '', $secret = '') {
+  sendpulse_load_lib();
+
+  if (empty($id)) {
+    $id = variable_get('sendpulse_id', '');
+  }
+  if (empty($secret)) {
+    $secret = variable_get('sendpulse_secret', '');
+  }
+
+  $token_storage = new SendPulseStorage\SessionStorage();
+  $client = new SendpulseApi($id, $secret, $token_storage);
+
+  return $client;
+}
+
+function sendpulse_configured() {
+  return variable_get('sendpulse_id', '') && variable_get('sendpulse_secret', '');
+}

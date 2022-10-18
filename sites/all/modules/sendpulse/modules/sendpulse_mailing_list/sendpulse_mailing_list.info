@@ -1,0 +1,19 @@
+name = SendPulse Mailling Lists
+description = Integration with SendPulse Mailing Lists
+core = 7.x
+package = SendPulse
+
+configure = admin/structure/mailing_lists
+php = 5.4
+
+dependencies[] = libraries
+dependencies[] = entity
+dependencies[] = field
+dependencies[] = sendpulse
+
+; Information added by Drupal.org packaging script on 2017-08-06
+version = "7.x-1.1"
+core = "7.x"
+project = "sendpulse"
+datestamp = "1502017746"
+

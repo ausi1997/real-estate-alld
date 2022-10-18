@@ -1,0 +1,18 @@
+name = SendPulse Push Notifications
+description = Integration with SendPulse Push Notifications
+core = 7.x
+package = SendPulse
+
+configure = admin/config/services/sendpulse
+php = 5.4
+
+dependencies[] = libraries
+dependencies[] = sendpulse
+dependencies[] = token
+
+; Information added by Drupal.org packaging script on 2017-08-06
+version = "7.x-1.1"
+core = "7.x"
+project = "sendpulse"
+datestamp = "1502017746"
+

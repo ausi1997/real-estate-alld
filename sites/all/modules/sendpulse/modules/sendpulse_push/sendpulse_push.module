@@ -1,0 +1,294 @@
+<?php
+
+define('SENDPULSE_PUSH_MAX_TITLE_LENGTH', 255);
+define('SENDPULSE_PUSH_MAX_BODY_LENGTH', 255);
+define('SENDPULSE_PUSH_STRETCH_TIME', 60); // 1 minute.
+define('SENDPULSE_PUSH_TTL_TIME_DEFAULT', 86400); // 1 day.
+
+use Sendpulse\RestApi\ApiClient as SendpulseApi;
+
+require_once __DIR__ . '/includes/sendpulse_push.forms.inc';
+
+/**
+ * Implements hook_menu().
+ */
+function sendpulse_push_menu() {
+  $items['admin/config/services/sendpulse/send-push'] = [
+    'title' => 'Send single Push',
+    'type' => MENU_LOCAL_ACTION,
+    'page callback' => 'drupal_get_form',
+    'page arguments' => ['sendpulse_send_single_push_form'],
+    'access arguments' => ['sendpulse send single push'],
+    'file' => 'includes/sendpulse_push.forms.inc',
+  ];
+
+  return $items;
+}
+
+/**
+ * Implements hook_permission().
+ */
+function sendpulse_push_permission() {
+  return [
+    'administer sendpulse push notifications' => [
+      'title' => t('Administer SendPulse Notifications module'),
+      'description' => t('Change Content Types that can be used for pushing nodes to SendPulse'),
+    ],
+    'sendpulse push notifications' => [
+      'title' => t('Push nodes to SendPulse'),
+      'description' => t('Push nodes to SendPulse automatically after creating or updating node.'),
+    ],
+    'sendpulse send single push' => [
+      'title' => t('Send single push to SendPulse'),
+      'description' => t('Send single custom push from special form.'),
+    ],
+  ];
+}
+
+/**
+ * Implements hook_node_insert().
+ */
+function sendpulse_push_node_insert($node) {
+  // Push new node.
+  sendpulse_push_get_node_data($node);
+}
+
+/**
+ * Implements hook_node_update().
+ */
+function sendpulse_push_node_update($node) {
+  // Push updated node.
+  sendpulse_push_get_node_data($node);
+}
+
+/**
+ * Get node data and send it to SendPulse if needed.
+ *
+ * @param object $node
+ *   Node object during insert/update.
+ */
+function sendpulse_push_get_node_data($node) {
+  // Get all flags to see if node could be pushed.
+  $push_enabled = variable_get('sendpulse_push_node_enabled_' . $node->type, 0);
+  $push_node = isset($node->sendpulse_push_this_node) ? $node->sendpulse_push_this_node : FALSE;
+  $push_allowed = user_access('sendpulse push notifications');
+
+  // Check required data to push.
+  if ($push_enabled && $push_node && $push_allowed && sendpulse_configured()) {
+    // Get node data that will be posted.
+    $title = sendpulse_push_get_push_title($node);
+    $body = sendpulse_push_get_push_body($node);
+    $link = sendpulse_push_get_push_link($node);
+    $ttl = variable_get('sendpulse_push_node_message_ttl_' . $node->type, 0);
+    $website_id = sendpulse_push_get_website_id();
+
+    if (empty($website_id)) {
+      watchdog('sendpulse', 'It looks like your website is not configured to send push notifications through the sendpulse.com. You can clarify the details in the control panel https://login.sendpulse.com/push');
+      drupal_set_message(t('It looks like your website is not configured to send push notifications through the sendpulse.com. You can clarify the details in the <a href="https://login.sendpulse.com/push" target="_blank">control panel</a>.'), 'error');
+    }
+    else {
+      try {
+        // If ttl was not specified then let it be 1 day by default.
+        if (empty($ttl)) {
+          $ttl = SENDPULSE_PUSH_TTL_TIME_DEFAULT;
+        }
+
+        // Send info about push to SendPulse.
+        $result = sendpulse_push_create_new_task($website_id, $title, $body, $ttl, [
+          'link' => $link,
+          'stretch_time' => SENDPULSE_PUSH_STRETCH_TIME,
+        ]);
+
+        if (!empty($result->is_error)) {
+          watchdog('sendpulse', 'Error after trying to create Push: @message', ['@message' => $result->message]);
+          drupal_set_message(t('Error after trying to create Push: @message', ['@message' => $result->message]), 'error');
+        }
+        else {
+          drupal_set_message(t('Push notification was successfully send to subscribers'));
+        }
+      }
+      catch (Exception $e) {
+        watchdog_exception('sendpulse', $e);
+        drupal_set_message(t('SendPulse: @message', ['@message' => $e->getMessage()]), 'error');
+      }
+    }
+  }
+}
+
+/**
+ * Get the title of message that should be sent to SendPulse.
+ *
+ * @param object $node
+ *   Node object.
+ *
+ * @return mixed|null|string
+ *   Processed title of message.
+ */
+function sendpulse_push_get_push_title($node) {
+  // Get title source.
+  $title = variable_get('sendpulse_push_node_message_title_' . $node->type, '');
+  $title = token_replace($title, ['node' => $node]);
+  $title = sendpulse_push_process_push_title($title);
+
+  return $title;
+}
+
+/**
+ * Process the title of message that should be sent to SendPulse.
+ *
+ * @param string $title
+ *   Unprocessed title of message.
+ *
+ * @return string
+ *   Processed title of message.
+ */
+function sendpulse_push_process_push_title($title) {
+  $title = strip_tags($title);
+
+  // Trim message if needed.
+  if (drupal_strlen($title) > SENDPULSE_PUSH_MAX_TITLE_LENGTH) {
+    $title = drupal_substr($title, 0, SENDPULSE_PUSH_MAX_TITLE_LENGTH - 3) . '...';
+  }
+
+  // Decode special symbols.
+  $title = html_entity_decode($title, ENT_QUOTES, 'UTF-8');
+  $title = htmlspecialchars_decode($title);
+
+  return $title;
+}
+
+/**
+ * Get the body of message that should be sent to SendPulse.
+ *
+ * @param object $node
+ *   Node object.
+ *
+ * @return mixed|null|string
+ *   Processed body of message.
+ */
+function sendpulse_push_get_push_body($node) {
+  // Get body source.
+  $body = variable_get('sendpulse_push_node_message_body_' . $node->type, '');
+  $body = token_replace($body, ['node' => $node]);
+  $body = sendpulse_push_process_push_body($body);
+
+  return $body;
+}
+
+/**
+ * Process the body of message that should be sent to SendPulse.
+ *
+ * @param string $body
+ *   Unprocessed body of message.
+ *
+ * @return string
+ *   Processed body of message.
+ */
+function sendpulse_push_process_push_body($body) {
+  $body = strip_tags($body);
+
+  // Trim message if needed.
+  if (drupal_strlen($body) > SENDPULSE_PUSH_MAX_BODY_LENGTH) {
+    $body = drupal_substr($body, 0, SENDPULSE_PUSH_MAX_BODY_LENGTH - 3) . '...';
+  }
+
+  // Decode special symbols.
+  $body = html_entity_decode($body, ENT_QUOTES, 'UTF-8');
+  $body = htmlspecialchars_decode($body);
+
+  return $body;
+}
+
+/**
+ * Get the link that should be sent to SendPulse.
+ *
+ * @param object $node
+ *   Node object.
+ *
+ * @return mixed|null|string
+ *   Processed link of message.
+ */
+function sendpulse_push_get_push_link($node) {
+  // Get link source.
+  $link = variable_get('sendpulse_push_node_message_link_' . $node->type, '');
+  $link = token_replace($link, ['node' => $node]);
+
+  return $link;
+}
+
+/**
+ * Creating a new Push campaign.
+ *
+ * @param int $website_id
+ *   Website ID.
+ * @param string $title
+ *   Title.
+ * @param string $body
+ *   Web push notification content.
+ * @param int $ttl
+ *   Push notification lifetime, in seconds.
+ * @param array $additionalParams
+ *   Optional request parameters.
+ *
+ * @return mixed|\stdClass
+ *
+ * @see https://login.sendpulse.com/manual/rest-api/#create-push
+ */
+function sendpulse_push_create_new_task($website_id, $title, $body, $ttl = 0, array $additionalParams = []) {
+  $client = sendpulse_get_client();
+
+  $task = [
+    'title' => $title,
+    'body' => $body,
+    'website_id' => $website_id,
+    'ttl' => $ttl,
+  ];
+
+  return $client->createPushTask($task, $additionalParams);
+}
+
+/**
+ * Implements hook_init().
+ */
+function sendpulse_push_init() {
+  // Add SendPulse integration code to the head of all front pages.
+  if (!path_is_admin(current_path())) {
+    $push_code = variable_get('sendpulse_push_code', '');
+    if (!empty($push_code)) {
+      $element = [
+        '#type' => 'markup',
+        '#markup' => $push_code,
+      ];
+      drupal_add_html_head($element, 'sendpulse_push_code');
+    }
+  }
+}
+
+/**
+ * Get website id for push notifications.
+ *
+ * @param SendpulseApi $client
+ *   Sendpulse API client.
+ *
+ * @return int|NULL
+ *   Website id or NULL if unable to determine the website.
+ */
+function sendpulse_push_get_website_id(SendpulseApi $client = NULL) {
+  global $base_url;
+
+  $website_id = NULL;
+  $parsed_url = parse_url($base_url);
+  if (empty($client)) {
+    $client = sendpulse_get_client();
+  }
+
+  $websites = $client->pushListWebsites();
+  foreach ($websites as $website) {
+    if ($website->url == $parsed_url['host']) {
+      $website_id = $website->id;
+      break;
+    }
+  }
+
+  return $website_id;
+}

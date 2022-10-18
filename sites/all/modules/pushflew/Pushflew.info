@@ -1,0 +1,16 @@
+name = PushFlew
+description = This extension enable PushFlew push service in Drupal site. Once installed, it allow user to accept and reject push option. If user accept it, Drupal site admin can send Push message through PushFlew.<br>Author: <a href="mailto:Jatin.rupeja@ebizontek.com">Jatin Rupeja</a>
+core = 7.x
+package = Pushflew
+
+configure = admin/config/people/Pushflew
+
+
+
+
+; Information added by Drupal.org packaging script on 2017-07-06
+version = "7.x-2.2"
+core = "7.x"
+project = "pushflew"
+datestamp = "1499349260"
+
